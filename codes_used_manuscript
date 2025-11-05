@@ -1,0 +1,85 @@
+# adapter and low quality sequences trimming using trimmomatic (version 0.39)
+trimmomatic PE -threads 8 -phred33 \    # PE - paired end mode
+sample1_R1.fastq.gz \   # input forward read sample 
+sample1_R2.fastq.gz \   # input reverse read sample 
+sample1_R1.paired.fastq.gz \    # output paired forward sample 
+sample1_R1.unpaired.fastq.gz \  # output unpaired forward sample 
+sample1_R2.paired.fastq.gz \    # output paired reverse sample 
+sample1_R2.unpaired.fastq.gz \  # output unpaired reverse sample
+ILLUMINACLIP:adapter10.fa:2:20:10:2 \   # removes illumina adapter sequence from adapater.fa file
+LEADING:3 \     # removes bases from 5' end with quality scores < 3
+TRAILING:3 \    # removes bases from 3' end with quality scores < 3
+SLIDINGWINDOW:4:15 \     # sliding window bases is 4 for minimum average quality score < 15 are trimmed in the window
+MINLEN:36   # after trimming reads, reads shorter than 36ß bp are discarded
+
+
+## mapping using bwa mem (version 0.7.17)
+
+bwa mem -k 32 -H -M \ 
+-R '@RG\tID:geno_name\tSM:sample1\tPL:illumina\tLB:lib1\tPU:unit1' \
+soy_ref4.fa \ 
+sample1_R1_paired.fastq.gz \ 
+sample1_R2.paired.fastq.gz \ 
+> sample1_mapped.sam
+
+
+## Removing duplicates using picard tool (ver 2.13.2)
+# indexing the reference genome 
+samtools faidx soy_ref4.fa 
+
+# create sequence dictionary 
+picard CreateSequenceDictionary R=soy_ref4.fa O=soy_ref4.dict
+
+## converting sam to bam format using samtools (ver 1.19.1)
+samtools view -ubhSt sample1_mapped.sam -o sample1_mapped.bam 
+    -u output uncompressed bam 
+    -b output in bam format
+    -h also include header in the output file
+    -S input is in sam format
+    -t provide a reference index file (.fai), not required when sam files already have @SQ headers
+
+# cleaning sam files 
+picard CleanSam INPUT=sample1_mapped.bam OUPTUT=sample1_mapped.clean.bam VALIDATION_STRINGENCY=SILENT
+
+# Fixing mate information 
+picard FixMateInformation INPUT=sample1_mapped.clean.bam OUTPUT=sample1_mapped.clean.fix.bam \ VALIDATION_STRINGENCY=SILENT
+
+# validating sam file 
+picard ValidateSamFile INPUT=sample1_mapped.clean.fix.bam OUTPUT=sample1_mapped.validation \ 
+VALIDATION_STRINGENCY=LENIENT
+
+# Collecting alignment summary metrics
+picard CollectAlignmentSummaryMetrics INPUT=sample1_mapped.clean.fix.bam OUTPUT=sample1_mapped.metrics \ 
+VALIDATION_STRINGENCY=LENIENT
+
+# Sorting the sam file 
+picard INPUT=sample1_mapped.clean.fix.bam OUTPUT=sample1_mapped.clean.fix.sorted.bam \
+SORT_ORDER=coordinate VALIDATION_STRINGENCY=LENIENT
+
+# Marking PCR duplicates
+picard MarkDuplicates INPUT=sample1_mapped.clean.fix.sorted.bam OUTPUT=sample1_mapped_final.bam \ 
+VALIDATION_STRINGENCY=LENIENT REMOVE_DUPLICATES=TRUE METRICS_FILE=sample1_mapped_duplicates.out
+
+## variant calling using samtools (ver 1.19.1) and varscan (ver 2.4.2)
+samtools mpileup -B -f soy_ref4.fa -b bam_list.txt -d 1000 | \ 
+varscan mpileup2cns --min-coverage 3 --min-var-freq 0.05 --p-value 0.005 \ 
+--variants --output-vcf --vcf-sample-list bam_list.txt > final_variant_file.vcf 
+
+# samtools paramters
+    -B disables base alignment quality computation
+    -f reference file 
+    -b list of bam files to be used as input 
+    -d maximum depth 
+
+# varscan parameters
+    mpileup2cns calls consensus variants that includes SNPs as well as indels 
+    --min-coverage minimum read depth per position per sample to make a call
+    --min-var-freq minimum variant frequency
+    --p-value statistical significance for calling a variant (Fisher's exact test)
+    --variants outputs only the variant position 
+    --output-vcf the output file is in vcf
+    --vcf-sample-list list of bam files in the same order as used in mpileup
+
+
+
+
